@@ -1,0 +1,138 @@
+services:
+    nginx:
+        image: nginx:latest
+        ports:
+            - '80:80'
+        volumes:
+            - './docker/nginx/default.conf:/etc/nginx/conf.d/default.conf'
+        networks:
+            - sail
+        depends_on:
+            - laravel.test
+            - minio
+            - phpmyadmin
+    laravel.test:
+        build:
+            context: ./vendor/laravel/sail/runtimes/8.4
+            dockerfile: Dockerfile
+            args:
+                WWWGROUP: '${WWWGROUP}'
+        image: sail-8.4/app
+        extra_hosts:
+            - 'host.docker.internal:host-gateway'
+        ports:
+            - '5173:5173'
+        environment:
+            WWWUSER: '${WWWUSER}'
+            LARAVEL_SAIL: 1
+            XDEBUG_MODE: '${SAIL_XDEBUG_MODE:-off}'
+            XDEBUG_CONFIG: '${SAIL_XDEBUG_CONFIG:-client_host=host.docker.internal}'
+            IGNITION_LOCAL_SITES_PATH: '${PWD}'
+            PHP_INI_SCAN_DIR: /etc/php/8.4/cli/conf.d:/var/www/html/docker/php
+        volumes:
+            - '.:/var/www/html'
+            - './docker/php/upload.ini:/etc/php/8.4/cli/conf.d/99-upload.ini'
+        networks:
+            - sail
+        depends_on:
+            - mysql
+            - minio
+    mysql:
+        image: 'mysql/mysql-server:8.0'
+        ports:
+            - '${FORWARD_DB_PORT:-3306}:3306'
+        environment:
+            MYSQL_ROOT_PASSWORD: '${DB_PASSWORD}'
+            MYSQL_ROOT_HOST: '%'
+            MYSQL_DATABASE: '${DB_DATABASE}'
+            MYSQL_USER: '${DB_USERNAME}'
+            MYSQL_PASSWORD: '${DB_PASSWORD}'
+            MYSQL_ALLOW_EMPTY_PASSWORD: 1
+        volumes:
+            - 'sail-mysql:/var/lib/mysql'
+            - './vendor/laravel/sail/database/mysql/create-testing-database.sh:/docker-entrypoint-initdb.d/10-create-testing-database.sh'
+        networks:
+            - sail
+        healthcheck:
+            test:
+                - CMD
+                - mysqladmin
+                - ping
+                - '-p${DB_PASSWORD}'
+            retries: 3
+            timeout: 5s
+    minio:
+        image: 'minio/minio:latest'
+        ports:
+            - '9000:9000'
+            - '8900:8900'
+        environment:
+            MINIO_ROOT_USER: sail
+            MINIO_ROOT_PASSWORD: password
+            MINIO_SERVER_URL: 'http://localhost:9000'
+            MINIO_BROWSER_REDIRECT_URL: 'http://localhost:8900'
+        volumes:
+            - 'sail-minio:/data/minio'
+        networks:
+            - sail
+        command: 'minio server /data/minio --console-address ":8900"'
+        healthcheck:
+            test:
+                - CMD
+                - curl
+                - '-f'
+                - 'http://localhost:9000/minio/health/live'
+            retries: 3
+            timeout: 5s
+    createbuckets:
+        image: 'minio/mc'
+        depends_on:
+            minio:
+                condition: service_healthy
+        networks:
+            - sail
+        entrypoint: >
+            /bin/sh -c "
+            /usr/bin/mc alias set myminio http://minio:9000 sail password;
+            /usr/bin/mc mb --ignore-existing myminio/mp3-files;
+            /usr/bin/mc anonymous set public myminio/mp3-files;
+            exit 0;
+            "
+    phpmyadmin:
+        image: 'phpmyadmin:latest'
+        environment:
+            PMA_HOST: mysql
+            PMA_USER: '${DB_USERNAME}'
+            PMA_PASSWORD: '${DB_PASSWORD}'
+            UPLOAD_LIMIT: 64M
+            PMA_ABSOLUTE_URI: 'http://localhost/phpmyadmin/'
+        networks:
+            - sail
+        depends_on:
+            - mysql
+    worker:
+        build:
+            context: ./vendor/laravel/sail/runtimes/8.4
+            dockerfile: Dockerfile
+            args:
+                WWWGROUP: '${WWWGROUP}'
+        image: sail-8.4/app
+        environment:
+            WWWUSER: '${WWWUSER}'
+            LARAVEL_SAIL: 1
+        volumes:
+            - '.:/var/www/html'
+        networks:
+            - sail
+        command: 'php artisan queue:work --tries=3 --timeout=600'
+        depends_on:
+            - mysql
+            - minio
+networks:
+    sail:
+        driver: bridge
+volumes:
+    sail-mysql:
+        driver: local
+    sail-minio:
+        driver: local
