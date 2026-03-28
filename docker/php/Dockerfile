@@ -1,13 +1,13 @@
 FROM php:8.4-fpm
 
 # Arguments defined in docker-compose.yml
-ARG WWWUSER
-ARG WWWGROUP
+ARG WWWUSER=1000
+ARG WWWGROUP=1000
 
 # Set working directory
 WORKDIR /var/www/html
 
-# Install dependencies
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
     libpng-dev \
@@ -22,26 +22,30 @@ RUN apt-get update && apt-get install -y \
     curl \
     libzip-dev \
     libonig-dev \
-    libxml2-dev
+    libxml2-dev \
+    libsqlite3-dev \
+    libssl-dev
 
 # Clear cache
 RUN apt-get clean && rm -rf /var/www/lists/*
 
-# Install extensions
-RUN docker-php-ext-install pdo_mysql mbstring zip exif pcntl bcmath gd
+# Install PHP extensions
+RUN docker-php-ext-configure gd --with-freetype --with-jpeg \
+    && docker-php-ext-install pdo_mysql mbstring zip exif pcntl bcmath gd
 
 # Install Composer
 COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
 
 # Create system user to run Composer and Artisan Commands
-RUN groupadd -g 1000 www
-RUN useradd -u 1000 -ms /bin/bash -g www www
+RUN groupadd -g ${WWWGROUP} www && \
+    useradd -u ${WWWUSER} -ms /bin/bash -g www www
 
 # Copy existing application directory contents
 COPY . /var/www/html
 
 # Copy existing application directory permissions
-COPY --chown=www:www . /var/www/html
+RUN chown -R www:www /var/www/html && \
+    chmod -R 775 /var/www/html/storage /var/www/html/bootstrap/cache
 
 # Change current user to www
 USER www
